@@ -2,9 +2,9 @@
 import cv2 as cv
 import numpy as np
 
-from MyHelpers.Frame import Frame
-from MyHelpers.Capture import Capture
-from MyHelpers.TrackBar import Slider
+from Frame import Frame
+from Capture import Capture
+from TrackBar import Slider
 
 
 class Video:

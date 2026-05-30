@@ -9,29 +9,31 @@ class Slider:
 
         self.window_name = window_name
         self.__original_params = params
+        self.scale = []
         self.params : list[str] = []
+        self.last_params : dict = {}
 
     def __call__(self):
 
+        cv.namedWindow(self.window_name)
         for slider_key in self.__original_params:
             slider_range : list = self.__original_params[slider_key]
             self.add((slider_key, slider_range))
 
     def param(self, param) -> int:
-        return cv.getTrackbarPos(self.window_name, param)
+        return cv.getTrackbarPos(param, self.window_name)
 
-    @property
-    def params(self) -> list[tuple]:
-        return [(param, self.param(param)) for param in self.params]
+    def get_params(self) -> dict[str, int]:
+        return dict([(param, self.param(param)) for param in self.params])
 
-    @params.setter
-    def params(self, value) -> None:
-        assert isinstance(value, dict), "Datatype of Params not dict"
-        self.params = value
+    # @params.setter
+    # def params(self, value) -> None:
+    #     assert isinstance(value, dict), "Datatype of Params not dict"
+    #     self.params = value
 
     def add(self, param : tuple[str, list]) -> None:
         assert isinstance(param, tuple), "Invalid parameter data"
-        self.params.append(param)
+        self.params.append(param[0])
         cv.createTrackbar(param[0], self.window_name, param[1][0], param[1][1], lambda _ : _)
 
     def apply_param(self, param_meta : tuple[str, Callable]): # name, function

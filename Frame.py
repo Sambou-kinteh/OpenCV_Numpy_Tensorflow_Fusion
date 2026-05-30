@@ -4,7 +4,7 @@ import numpy as np
 import sys
 import threading
 
-from MyHelpers.TrackBar import Slider        # relative import
+from TrackBar import Slider        # relative import
 from numpy import ndarray
 from typing import Callable, Final
 
@@ -105,40 +105,55 @@ class Frame(ndarray):
             )
         return self
 
-    def draw_point(self, point, radius : int = 5, color: tuple[int, int, int] = (0, 0, 255), thickness: int = 1):
+    def draw_point(self, point, radius : int = 5, color: tuple[int, int, int] = (0, 0, 255), thickness: int = 3):
 
-        def __draw(): self(cv.circle, center=point, radius=radius, color=color, thickness=thickness)
+        def __draw(points): self(cv.circle, center=points, radius=radius, color=color, thickness=thickness)
 
-        np.vectorize(__draw)()      # TODO test if __draw needs to take the args itself
+        np.vectorize(__draw, signature="(2) -> ()")(point)
         return self
 
 
     def set_mouse_callback(self, **kwargs) -> None:
         """
         functionalities:
-        - press d to remove last added point
+        - double left click to add a point
+        - double right click to remove a point in the area
 
         :param kwargs: must have kwargs: amount, points, type
         :return: None
         """
         # TODO implement type with CALLBACK_TYPE_<POINTS, AREA>
-        assert kwargs.get(self.CALLBACK_AMOUNT) is not None and isinstance(kwargs.get(self.CALLBACK_AMOUNT), int), "Mouse callback must have kwargs: amount"
-        assert kwargs.get(self.CALLBACK_POINTS) is not None and isinstance(kwargs.get(self.CALLBACK_POINTS), list), "Mouse callback must have kwargs: points"
+        # TODO implement min_distance allowed between points as optional parameter
+        assert kwargs.get(self.CALLBACK_AMOUNT) is not None and isinstance(kwargs.get(self.CALLBACK_AMOUNT), int), "Mouse callback must have kwarg: amount"
+        assert kwargs.get(self.CALLBACK_POINTS) is not None and isinstance(kwargs.get(self.CALLBACK_POINTS), list), "Mouse callback must have kwarg: points"
         cv.setMouseCallback(self.window_name, self.__select_points, param=kwargs)
 
     def __select_points(self, event : int, x : int, y : int, flag : int, params : dict):
 
         points : list = params[Frame.CALLBACK_POINTS]
-        key = self.waitUserKey(1) & 0xFF        # TODO: solve stream interference problem
-        if event == cv.EVENT_LBUTTONDBLCLK:     # double click
-            if len(points) < params[Frame.CALLBACK_AMOUNT]:
-                points.append((x,y))
-                print(f"[INFO] current points {points}")
-        if key == ord("d"):
-            print("CLICKED")
+        if event == cv.EVENT_LBUTTONDBLCLK and flag == 1:             # only double left -> add
+
+            amount = params[Frame.CALLBACK_AMOUNT]
+            if len(points) < amount:
+                if len(points) > 0:
+                    _, distances = self.nearest_point((x, y), points)
+                    # todo if point in array or in close prorimity dont add, for now 20px
+                    if distances[0] < 20:
+                        print("[INFO] point already selected")
+                    else:
+                        points.append((x,y))
+                        print(f"[INFO] current points {len(points)}")
+                else:
+                    points.append((x,y))
+                    print(f"[INFO] current points {len(points)}")
+
+        elif event == cv.EVENT_LBUTTONDBLCLK and flag & cv.EVENT_FLAG_SHIFTKEY:     # double left with shift -> remove
             if len(points) > 0:
-                points.pop()
-                print(f"[INFO] current points after removal {points}")
+                i, distances = self.nearest_point((x, y), points)
+                if distances[0] < 20:
+                    print(points.pop(i))
+                    print(f"[INFO] current points after removal: {len(points)}")
+                else: print(f"[INFO] no points in range")
 
         _callable : Callable|None = params.get(Frame.CALLBACK_CALLABLE)
         call : bool|None = params.get(Frame.CALLBACK_CALL)
@@ -150,6 +165,20 @@ class Frame(ndarray):
 
     # TODO: implement
     def __select_area(self, event : int, x : int, y : int, flag : int, params : dict): ...
+
+    @staticmethod
+    def nearest_point(point : tuple, points : list[tuple[int, int]]) -> tuple:
+
+        """
+
+        :param point: point to check distance of
+        :param points: all the points to be tested against
+        :return: returns index of the point with the min distance, and as sorted list (ascending) of the distance values
+        """
+        #TODO vectorize func
+
+        px_distances = np.linalg.norm(np.array(point) - np.array(points), axis=1)   # broadcasts point to N x 2 and substracts from N x 2
+        return np.argmin(px_distances), np.sort(px_distances)
 
     @staticmethod
     def waitUserKey(ms : int) -> int:
@@ -185,7 +214,8 @@ class Frame(ndarray):
             try:
                 call = func(self, dst=self, **kwargs)
             except Exception:
-                if not func.__name__ == "line":
+                exceptions = ["line", "circle"]
+                if not func.__name__ in exceptions:
                     print(f"[WARNING] DST mode unavailable, make sure to store the object for which the function <{func.__name__}> was used on", file=sys.stderr)
                 call = func(self, **kwargs)
 

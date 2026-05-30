@@ -1,8 +1,8 @@
 import cv2 as cv
 import numpy as np
 
-from MyHelpers.Frame import Frame
-from MyHelpers.Video import Video
+from Frame import Frame
+from Video import Video
 
 class Capture:
 
