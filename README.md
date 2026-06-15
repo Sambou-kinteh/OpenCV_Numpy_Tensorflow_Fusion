@@ -8,14 +8,21 @@
 
 ```python
 # standard cv2 / numpy
+import cv2 as cv
+
+frame = cv.imread("img.png")
 gray    = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
 blurred = cv.GaussianBlur(gray, (5, 5), 0)
 resized = cv.resize(blurred, dsize=(640, 480))
+cv.imshow("preview", resized)
+cv.waitKey(0)
 ```
 
 ```python
 # Frame
-Frame("img.png", "preview").toGray().rescale(0.5).show(0)
+Frame("img.png", "preview").toGray()(cv.GaussianBlur, ksize=(5, 5), sigmaX=0).rescale(0.5).show(0)
+# or 
+Frame("img.png", "preview")(cv.cvtColor, code=cv.COLOR_BGR2GRAY)(cv.GaussianBlur, ksize=(5, 5), sigmaX=0)(cv.resize, dsize=(640, 480)).show(0)
 ```
 
 The same Python object persists through every transformation.
