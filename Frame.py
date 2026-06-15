@@ -1,8 +1,8 @@
 
 import cv2 as cv
 import numpy as np
-import sys
 import threading
+import ctypes
 
 from TrackBar import Slider        # relative import
 from numpy import ndarray
@@ -25,14 +25,27 @@ class Frame(ndarray):
     """
     Side Project:\n
     Frame inherits all native functions of ndarray.
-    It is an encapsulated ndarray class that combines numpy and opencv functions
+    It is an encapsulated ndarray class that combines numpy and opencv functions (todo pytorch)
     for faster implementations of my exercises and for future projects
 
-    DST Mode: Wenn eine Function kein DST hat, funktioniert self falls self.shape (was bei __new__ im objekt selbst festgelegt wird) nicht beeinflusst wird
-
-    TODO:
 
     """
+
+    class __PyFrameArrayObject(ctypes.Structure):
+
+        _fields_ = [                            # HEADER
+            ("ob_refcnt",   ctypes.c_ssize_t),  # reference count
+            ("ob_type",     ctypes.c_void_p),   # object type Frame
+
+            ("data",        ctypes.c_void_p),   # raw pixel buffer
+            ("nd",          ctypes.c_int),      # num dimensions
+            ("dimensions",  ctypes.c_void_p),   # shape
+            ("strides",     ctypes.c_void_p),   # strides
+            ("base",        ctypes.c_void_p),   # base object for views
+            ("descr",        ctypes.c_void_p),  # dtype descriptor
+            ("flags",       ctypes.c_int),      # writable, own data ...
+            # TODO LATER __dict__ type <c_void_p> to __slots__ for frame subclass
+        ]
 
     CALLBACK_POINTS : Final = "points"
     CALLBACK_AMOUNT : Final = "amount"
@@ -41,43 +54,169 @@ class Frame(ndarray):
     CALLBACK_CALL_PARAMS : Final = "call_params"
     CALLBACK_CALL_RETURN : Final = "call_return"
 
+    __DOMAIN_TYPE_SPATIAL : Final = 0
+    __DOMAIN_TYPE_FREQUENCY : Final = 1
+    __DOMAIN_TYPE_TENSOR : Final = 2
+
+    __CALL_BOUNDED = "bounded"
+
+    __GETATTR_EXCEPTIONS_NAMES = "names"
+    __GETATTR_EXCEPTIONS_TYPES = "types"
+    __GETATTR_EXCEPTIONS : dict[str, list] = {
+        __GETATTR_EXCEPTIONS_NAMES : ["copy", ],
+        __GETATTR_EXCEPTIONS_TYPES : [Slider, ]
+    }
+
 
     # TODO: mehrere Views and can immer neue Views erstellen mit der möglichkeit dies in sich zu speichern
     # TODO: each view should be refrenced with an index starting 0 - Main View
     # TODO: serializable functionality
     # TODO: dragable point that determine px distance to other defined points irt and a variant where the distances are shown on the connecting lines using self.nearest
-    # TODO: toFloat, toUint8, toFrequencyDomain, toSpatialDomain (Frame should have __<VARIABLE> with name DOMAIN_TYPE)
+    # TODO: toFloat, toUint8, toTensor, toFrequencyDomain, toSpatialDomain (Frame should have class property (without setter) DOMAIN_TYPE)
+    # TODO: different functionalities based on domain type, can have multiple domain types but with constaints
+    # TODO: normalize, zero center and whitening maybe
+    # TODO: prepare non dst instances that are through away for garbage collection (nr. ref = 0)
+    # TODO: __scale to a class property (think about it)
+    # TODO: select points with angle (as in a direction or not)
+    # TODO: solving the dtype buffer problem: set though field to float32 on creation and quantize when showing if domain_type not in quantized form
     def __new__(cls, src : str|ndarray, window_name : str, slider : Slider = None, updatable : bool = True) -> "Frame|ndarray":
 
         # read in data and cast to subclass
-        _frame : ndarray = cv.imread(src) if isinstance(src, str) else src
-        _frame_obj = np.asarray(_frame).view(cls)
+        __frame_obj = np.asarray(cv.imread(src) if isinstance(src, str) else src).view(cls)
 
-        # add custom attributes to new obj
-        _frame_obj._updatable = updatable
-        _frame_obj._window_name = window_name
-        _frame_obj._slider = slider
-        _frame_obj._scale = 1.0
+        # custom attributes to new obj
+        __frame_obj.updatable = updatable
+        __frame_obj.window_name = window_name
+        __frame_obj.slider = slider
+        __frame_obj.__scale = 1.0
+        __frame_obj.__domain_type = cls.__DOMAIN_TYPE_SPATIAL
 
-        return _frame_obj
+        return __frame_obj
 
     def __init__(self, src : str|ndarray, window_name : str,  slider : Slider = None, updatable : bool = True):
 
         self.window_name = window_name
         self.updatable = updatable
         self.slider = slider
-        self.scale = 1.0
-        cv.namedWindow(self.window_name)
+        self.__scale = 1.0
+        self.__domain_type = self.__DOMAIN_TYPE_SPATIAL
+        # cv.namedWindow(self.window_name)
 
     def __array_finalize__(self, obj):
 
         # called when new view of array is made
         # must handle none objs
         if obj is None: return          # direct construction
-        self.updatable = getattr(obj, "_updatable", True)
-        self.window_name = getattr(obj, "_window_name", " ")
-        self.slider = getattr(obj, "_slider", None)
-        self.scale = getattr(obj, "_scale", 1.0)
+        self.updatable = getattr(obj, "updatable", True)
+        self.window_name = getattr(obj, "window_name", " ")
+        self.slider = getattr(obj, "slider", None)
+        self.__scale = getattr(obj, "__scale", 1.0)
+        self.__domain_type = getattr(obj, "__domain_type", self.__DOMAIN_TYPE_SPATIAL)
+
+    # override next to implement a generator Frame
+    def __next__(self, **kwargs): ...
+
+    def __iter__(self) -> "Frame":
+        return self
+
+    def __call__(self, func : Callable[["Frame|ndarray", ...], "Frame|ndarray"], **kwargs) -> "Frame":
+        """
+        call frame to run a function (transformation) on the frame
+        :param func: a python function that gives back a frame
+        :param kwargs: the keyword arguments of the function
+        :return: same instance of the object
+        """
+        assert callable(func), "Passed argument to call is not a function"
+        if self.updatable:
+            if not kwargs.get(self.__CALL_BOUNDED): call = func(self, **kwargs)
+            else:
+                kwargs.pop(self.__CALL_BOUNDED)
+                call = func(**kwargs)
+
+            assert isinstance(call, ndarray), f"Function {func.__name__} didn't return the expected type"
+
+        # else: return func(self, **kwargs)       # todo polish it
+
+        # MILESTONE (ONE FRAME, DO ALL): __refresh_frame successfully bypassed (DST solved)
+
+        obj_struct = ctypes.cast(id(self), ctypes.POINTER(self.__PyFrameArrayObject)).contents
+        # call_struct = ctypes.cast(id(call), ctypes.POINTER(self.__PyFrameArrayObject)).contents
+        # isBufferHigher : bool = self.nbytes < call.nbytes
+
+        # self_buffer = obj_struct.data   # freed during del to prevent leakage
+        # call_buffer = call_struct.data
+
+        # obj_struct.data, call_struct.data = call_buffer, self_buffer
+
+        # if call.dtype != self.dtype:    # allign dtypes     TODO remodel dtype allignment
+
+        # ctypes.pythonapi.Py_DecRef(ctypes.cast(obj_struct.descr, ctypes.py_object))
+        # ctypes.pythonapi.Py_IncRef(ctypes.py_object(call.dtype))
+        # obj_struct.descr = id(call.dtype)
+
+        if call.shape != self.shape:    # allign the shapes of object in memory and new data into memery at same address
+
+            dim_ssize_t_pointer = ctypes.cast(obj_struct.dimensions, ctypes.POINTER(ctypes.c_ssize_t))
+            stride_ssize_t_pointer = ctypes.cast(obj_struct.strides, ctypes.POINTER(ctypes.c_ssize_t))
+
+            new_shape = call.shape
+            new_stride = call.strides
+
+            obj_struct.nd = len(new_shape)
+            for i in range(obj_struct.nd):
+                dim_ssize_t_pointer[i] = new_shape[i]
+                stride_ssize_t_pointer[i] = new_stride[i]
+
+        self[:] = call
+        del call
+
+        return self
+
+    def __getattribute__(self, item: str):
+
+        attr = super().__getattribute__(item)       # get bounded method from ndarray
+        if not item.endswith("__") and callable(attr) and item not in type(self).__dict__:    # intercept only when non dunder, callable and not in self
+
+            isIntercept : bool = True
+            if hasattr(attr, "__name__"): # method
+                if attr.__name__ in self.__GETATTR_EXCEPTIONS[self.__GETATTR_EXCEPTIONS_NAMES]: isIntercept = False
+            elif hasattr(attr, "__class__"): # class
+                if type(attr) in self.__GETATTR_EXCEPTIONS[self.__GETATTR_EXCEPTIONS_TYPES]: isIntercept = False
+
+            if isIntercept:
+
+                def intercept(**kwargs):
+                    kwargs.update([(self.__CALL_BOUNDED, True)])
+                    return self(attr, **kwargs)
+                return intercept
+
+        return attr
+
+
+    # todo METHOD DEPRECIATED
+    def __refresh_frame(self, src : ndarray) -> "Frame":
+
+        # if hasDst: return None
+        obj = self.__new__(
+            self.__class__,
+            src,
+            self.window_name,
+            self.slider,
+            self.updatable
+        )
+        # __new__ calls __...finalize__ directly
+        return obj
+
+    @property
+    def domain_type(self):
+        return self.__domain_type
+
+    @property
+    def normalized(self) -> "Frame":
+
+        norm = lambda frame: (frame - frame.mean()) / frame.std()
+        return self(norm)
+
 
     def show(self, waitKey : None|int = None) -> None|int:
         cv.imshow(self.window_name, self)
@@ -89,7 +228,6 @@ class Frame(ndarray):
         destroys all active windows
         :return: None
         """
-
         cv.destroyWindow(self.window_name)
 
     def setWindowName(self, window_name : str) -> "Frame":
@@ -110,7 +248,22 @@ class Frame(ndarray):
 
         return self(cv.cvtColor, code=cv.COLOR_BGR2GRAY)
 
-    def rescale(self, scale : float = 1, isIncremental : bool = False) -> "Frame|ndarray":
+    def toFloat(self) -> "Frame":
+        # todo update dtype in memory
+        to_float = lambda frame: (frame - frame.min()) / (frame.max() - frame.min())
+        return self(to_float)
+
+    def toUint8(self) -> "Frame":
+        # todo update dtype in memory
+        to_int = lambda frame: np.clip(frame * 255, 0, 255).astype(np.uint8)
+        return self(to_int)
+
+    def toFreuqencyDomain(self) -> "Frame": ...
+
+    def toSpatialDomain(self) -> "Frame": ...
+
+
+    def rescale(self, scale : float = 1, isIncremental : bool = False) -> "Frame":
 
         """
         This function scales a frame to a desired resolution with a scaler where 1 means no scaling and .5 means half the original size
@@ -121,15 +274,18 @@ class Frame(ndarray):
         """
 
         if self.updatable and (not scale == 1 and not isIncremental):
-            self.scale = scale if not isIncremental else self.scale - scale
+            self.__scale = scale if not isIncremental else self.__scale - scale
+            dsize = (int(self.shape[1] * self.__scale), int(self.shape[0] * self.__scale))
+            interpolation = cv.INTER_CUBIC if scale > 1 else cv.INTER_AREA
+            if scale > 1: return self.__refresh_frame(cv.resize(self, dsize=dsize, interpolation=interpolation))
             return self(
                 cv.resize,
-                dsize=(int(self.shape[1] * self.scale), int(self.shape[0] * self.scale)),
-                interpolation=cv.INTER_CUBIC if scale > 1 else cv.INTER_AREA
+                dsize=dsize,
+                interpolation=interpolation
             )
         return self
 
-    def draw_point(self, point, radius : int = 5, color: tuple[int, int, int] = (0, 0, 255), thickness: int = 3):
+    def draw_point(self, point : list, radius : int = 5, color: tuple[int, int, int] = (0, 0, 255), thickness: int = 3):
 
         """
         This function draws a circle around point(s) on frame
@@ -142,9 +298,28 @@ class Frame(ndarray):
         """
 
         if not point: return self
-        def __draw(points): self(cv.circle, center=points, radius=radius, color=color, thickness=thickness)
+        def __draw(_point): self(cv.circle, center=_point, radius=radius, color=color, thickness=thickness)
 
-        np.vectorize(__draw, signature="(2) -> ()")(point)      # todo draw_point() = __vectorized_draw_point()
+        np.vectorize(__draw, signature="(2) -> ()")(point)      # todo draw_point() = __vectorized_draw_point() in getattr
+        return self
+
+    def draw_line(self, line : list[int], color: tuple[int, int, int] = (0, 0, 255), thickness: int = 1):
+
+        """
+        This function draws a line through pt1 and pt2 on frame
+
+        :param line: should have the form [pt1_x pt1_y, pt2_x pt2_y]
+        :param color: color of the line(s)
+        :param thickness: thickness of the line(s)
+        :return: returns back frame with the line(s)
+        """
+
+        if not line: return self
+        def __draw(_line):
+            assert len(_line) == 4, "Invalid construction of line coordinates"
+            self(cv.line, pt1=_line[:2], pt2=_line[2:], color=color, thickness=thickness, lineType=cv.LINE_AA)
+
+        np.vectorize(__draw, signature="(4) -> ()")(line)      # todo draw_line() = __vectorized_draw_line() in getattr
         return self
 
 
@@ -164,14 +339,15 @@ class Frame(ndarray):
         # TODO allow user to set custom callback function but through a standard pipeline
         assert kwargs.get(self.CALLBACK_AMOUNT) is not None and isinstance(kwargs.get(self.CALLBACK_AMOUNT), list), "Mouse callback must have kwarg: amount"
         assert kwargs.get(self.CALLBACK_POINTS) is not None and isinstance(kwargs.get(self.CALLBACK_POINTS), list), "Mouse callback must have kwarg: points"
+        cv.namedWindow(self.window_name)
         cv.setMouseCallback(self.window_name, self.__select_points, param=kwargs)
 
     def __select_points(self, event : int, x : int, y : int, flag : int, params : dict):
 
-        points : list = params[Frame.CALLBACK_POINTS]
+        points : list = params[self.CALLBACK_POINTS]
         if event == cv.EVENT_LBUTTONDBLCLK and flag == 1:             # only double left -> add
 
-            amount = params[Frame.CALLBACK_AMOUNT][0]
+            amount = params[self.CALLBACK_AMOUNT][0]
             if len(points) < amount:
                 if len(points) > 0:
                     _, distances = self.nearest_point((x, y), points)
@@ -193,13 +369,13 @@ class Frame(ndarray):
                     print(f"[INFO] current points after removal: {len(points)}")
                 else: print(f"[INFO] no points in range")
 
-        _callable : Callable|None = params.get(Frame.CALLBACK_CALLABLE)
-        call : bool|None = params.get(Frame.CALLBACK_CALL)
-        call_params : dict|None = params.get(Frame.CALLBACK_CALL_PARAMS)
+        _callable : Callable|None = params.get(self.CALLBACK_CALLABLE)
+        call : bool|None = params.get(self.CALLBACK_CALL)
+        call_params : dict|None = params.get(self.CALLBACK_CALL_PARAMS)
 
         if _callable is not None and call is not None:
             assert isinstance(call, bool), "Callback flag call is not bool"
-            if call: params.update({Frame.CALLBACK_CALL_RETURN: self(_callable, **call_params)})
+            if call: params.update({self.CALLBACK_CALL_RETURN: self(_callable, **call_params)})
 
     # TODO: implement
     def __select_area(self, event : int, x : int, y : int, flag : int, params : dict): ...
@@ -229,11 +405,12 @@ class Frame(ndarray):
         :return: returns key pressed, if nothing was registered, returns 255
         """
         assert isinstance(ms, int), "WaitKey timeout must always be an integer in milliseconds"
-        key = cv.waitKey(ms) & 0xFF
-        return key
+        return cv.waitKey(ms) & 0xFF
 
     @staticmethod
-    def waitUserKeyAsync() -> int: return cv.waitKey(1) & 0xFF
+    def waitUserKeyAsync() -> int:
+        # return cv.waitKey(1) & 0xFF
+        ...
 
     def preprocessing(self, **kwargs) -> None:
         # TODO stack of functions and parameters and new ones can be added at any time
@@ -247,45 +424,6 @@ class Frame(ndarray):
         finally:
             cv.destroyAllWindows()
 
-    # override next to implement a generator Frame
-    def __next__(self, **kwargs): ...
-
-    def __iter__(self) -> "Frame":
-        return self
-
-    def __call__(self, func : Callable[["Frame|ndarray", ...], "Frame|ndarray"], **kwargs) -> "Frame":
-        """
-        call frame to run a function (transformation) on the frame
-        :param func: a python function that gives back a frame
-        :param kwargs: the keyword arguments of the function
-        :return:
-        """
-
-        assert isinstance(func, Callable), "Passed argument to call is not a function"
-        if self.updatable:
-            try:
-                call = func(self, dst=self, **kwargs)
-            except Exception:
-                exceptions = ["line", "circle"]
-                if not func.__name__ in exceptions:
-                    print(f"[WARNING] DST mode unavailable, make sure to store the object for which the function <{func.__name__}> was used on", file=sys.stderr)
-                call = func(self, **kwargs)
-
-            assert isinstance(call, ndarray), f"Function {func.__name__} didn't return the expected type"
-        return self.__refresh_frame(call)
-
-    def __refresh_frame(self, src : str | ndarray) -> "Frame":
-
-        # if hasDst: return None
-        obj = self.__new__(
-            self.__class__,
-            src,
-            self.window_name,
-            self.updatable
-        )
-        obj.__array_finalize__(self)        # finalize so eine neue View auf Klasse nicht nötig
-        return obj
-
     def save(self):
         # TODO: should call serialize with the flag of only saving on disk
         ...
@@ -294,7 +432,7 @@ class Frame(ndarray):
 
         data = {
             "window_name": self.window_name,
-            "scale": self.scale,
+            "scale": self.__scale,
             "updatable": self.updatable,
         }
         ...
@@ -308,22 +446,30 @@ if __name__ == "__main__":
 
     frameObj : Frame = Frame("../assignment_01/img.png", "Bild")
     # print(frameObj[:, :, :].setWindowName("Sambou Kinteh")(cv.cvtColor, code=cv.COLOR_BGR2RGB).toGray()[:, :].rescale(2).show(10000))
+    #
+    # frameObj.toGray()
+    # # frameObj.waitUserKey(0)
+    #
+    # data = {
+    #     Frame.CALLBACK_AMOUNT: [3],
+    #     Frame.CALLBACK_POINTS: []
+    # }
+    # frameObj.set_mouse_callback(**data)
+    # # frameObj.preprocessing = lambda x : print(x)
+    # frameObj.__next__ = ...
 
-    data = {
-        Frame.CALLBACK_AMOUNT: [3],
-        Frame.CALLBACK_POINTS: []
-    }
-    frameObj.set_mouse_callback(**data)
-    # frameObj.preprocessing = lambda x : print(x)
-    frameObj.__next__ = ...
+    frameObj.toGray().show(1)
+    # frameObj.astype(dtype=np.float32)
+    # print("new dtype: ", frameObj.dtype)
+    # print(frameObj.waitUserKey(0))
 
-    while True:
-
-        frameObj.show(1)
-        if len(data[Frame.CALLBACK_POINTS]) == 3:
-            print(data[Frame.CALLBACK_POINTS])
-            frameObj.destroy()
-            break
+    # while True:
+    #
+    #     frameObj.show(1)
+    #     if len(data[Frame.CALLBACK_POINTS]) == 3:
+    #         print(data[Frame.CALLBACK_POINTS])
+    #         frameObj.destroy()
+    #         break
 
 
 __all__ = [Frame]
